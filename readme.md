@@ -33,7 +33,7 @@ A conversational AI chatbot built with **Python**, **Gradio**, and **Ollama** �
 git clone https://github.com/yourusername/ollama-chatbot.git
 cd ollama-chatbot
 
-Model Configuration:
+## ⚙️ Model Configuration:
 
 The model used is hardcoded inside app.py. Default is:
 

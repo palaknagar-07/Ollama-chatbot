@@ -267,13 +267,10 @@ conversation_agent = ConversationAgent()
 
 def change_voice_personality(personality_key):
     """Change the voice personality"""
-    result = conversation_agent.change_personality(personality_key)
-    personality_info = conversation_agent.get_personality_info()
-    return result, personality_info["description"]
-
-def get_personality_choices():
-    """Get list of personality choices for dropdown"""
-    return [(f"{p.name} - {p.description}", key) for key, p in VOICE_PERSONALITIES.items()]
+    global conversation_agent
+    conversation_agent.change_personality(personality_key)
+    personality = conversation_agent.personality_obj
+    return f"Changed to {personality.name} personality", personality.description
 
 def test_ollama_connection():
     """Test if Ollama server is running"""
@@ -296,67 +293,28 @@ def test_ollama_connection():
         logger.error(f"Cannot connect to Ollama server: {e}")
         return False, f"Connection failed: {e}"
 
-def process_text_input_streaming(message: str, history: List[Dict[str, str]]):
-    """Process text input and generate streaming response"""
-    if not message.strip():
-        yield history, ""
-        return
-    
-    # Get response from agent
-    response_generator = conversation_agent.get_ollama_response(message)
-    
-    # Add user message to display history
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": ""})
-    
-    # Stream response
-    for partial_response in response_generator:
-        history[-1]["content"] = partial_response
-        yield history, ""
-
-def process_audio_input_streaming(audio_file, history: List[Dict[str, str]]):
-    """Process audio input, convert to text, and generate streaming response"""
-    if audio_file is None:
-        yield history, "No audio file provided"
-        return
-    
-    # Convert speech to text
-    transcribed_text = conversation_agent.speech_to_text(audio_file)
-    
-    if not transcribed_text or transcribed_text.startswith("Sorry") or transcribed_text.startswith("Error"):
-        yield history, transcribed_text or "Failed to transcribe audio"
-        return
-    
-    # Process the transcribed text
-    response_generator = conversation_agent.get_ollama_response(transcribed_text)
-    
-    # Add to display
-    history.append({"role": "user", "content": f"🎤 {transcribed_text}"})
-    history.append({"role": "assistant", "content": ""})
-    
-    # Stream response
-    for partial_response in response_generator:
-        history[-1]["content"] = partial_response
-        yield history, f"Transcribed: {transcribed_text}"
-
-def generate_audio_response(history: List[Dict[str, str]]):
+def generate_audio_response(history):
     """Generate audio for the last bot response"""
-    if not history:
+    if not history or not isinstance(history, list):
         return None
     
-    # Find the last assistant message
+    # The last message in history is a tuple of (user_message, bot_response)
     last_response = ""
-    for msg in reversed(history):
-        if msg.get("role") == "assistant" and msg.get("content"):
-            last_response = msg["content"]
+    for user_msg, bot_msg in reversed(history):
+        if bot_msg and isinstance(bot_msg, str) and bot_msg.strip():
+            last_response = bot_msg
             break
     
     if not last_response.strip():
         return None
     
-    # Generate TTS audio
-    audio_file = conversation_agent.text_to_speech(last_response)
-    return audio_file
+    try:
+        # Generate TTS audio
+        audio_file = conversation_agent.text_to_speech(last_response)
+        return audio_file
+    except Exception as e:
+        logger.error(f"Error generating audio: {str(e)}")
+        return None
 
 def clear_conversation():
     """Clear conversation history while maintaining current personality"""
@@ -408,13 +366,12 @@ def create_interface():
         
         with gr.Row():
             with gr.Column(scale=2):
-                # Main chat interface
+                # Main chat interface - Fixed for Gradio 3.x (list of tuples)
                 chatbot = gr.Chatbot(
                     height=500,
                     label="Conversation",
                     show_label=True,
-                    container=True,
-                    type="messages"
+                    container=True
                 )
                 
                 # Text input
@@ -432,7 +389,7 @@ def create_interface():
                     gr.Markdown("### 🎤 Voice Input")
                     with gr.Row():
                         audio_input = gr.Audio(
-                            sources=["microphone", "upload"],
+                            source="microphone",
                             type="filepath",
                             label="Record or Upload Audio"
                         )
@@ -443,8 +400,7 @@ def create_interface():
                     gr.Markdown("### 🔊 Audio Response")
                     audio_output = gr.Audio(
                         label="Generated Speech",
-                        autoplay=False,
-                        show_download_button=True
+                        autoplay=False
                     )
                     generate_audio_btn = gr.Button("Generate Audio Response 🔊", variant="secondary")
             
@@ -486,23 +442,20 @@ def create_interface():
                     interactive=False
                 )
         
-        # Event handlers - Fixed to return proper values
+        # Event handlers - Fixed to use tuples format for Gradio 3.x
         def handle_text_submit(message, history):
+            """Handle text message submission - returns list of tuples"""
             if not message.strip():
-                return history, ""
+                return history or [], ""
             
-            # Convert list of dicts to proper format if needed
-            if not isinstance(history, list):
+            # Ensure history is a list
+            if history is None:
                 history = []
             
             # Get response from agent
             response_generator = conversation_agent.get_ollama_response(message)
             
-            # Add user message to display history
-            history.append({"role": "user", "content": message})
-            history.append({"role": "assistant", "content": ""})
-            
-            # Get the complete response (non-streaming for button clicks)
+            # Get the complete response
             complete_response = ""
             try:
                 for partial_response in response_generator:
@@ -510,16 +463,18 @@ def create_interface():
             except Exception as e:
                 complete_response = f"Error: {str(e)}"
             
-            # Update the last message with complete response
-            history[-1]["content"] = complete_response
+            # Add user message and bot response as a tuple
+            history.append((message, complete_response))
+            
             return history, ""  # Return updated history and clear input
         
         def handle_audio_submit(audio, history):
+            """Handle audio message submission - returns list of tuples"""
             if audio is None:
-                return history, "No audio file provided"
+                return history or [], "No audio file provided"
             
-            # Convert list of dicts to proper format if needed
-            if not isinstance(history, list):
+            # Ensure history is a list
+            if history is None:
                 history = []
             
             try:
@@ -532,17 +487,14 @@ def create_interface():
                 # Get response from agent
                 response_generator = conversation_agent.get_ollama_response(transcribed_text)
                 
-                # Add to display
-                history.append({"role": "user", "content": f"🎤 {transcribed_text}"})
-                history.append({"role": "assistant", "content": ""})
-                
                 # Get the complete response
                 complete_response = ""
                 for partial_response in response_generator:
                     complete_response = partial_response
                 
-                # Update the last message with complete response
-                history[-1]["content"] = complete_response
+                # Add user message (with microphone emoji) and bot response as a tuple
+                history.append((f"🎤 {transcribed_text}", complete_response))
+                
                 return history, f"Transcribed: {transcribed_text}"
                 
             except Exception as e:
